@@ -1,20 +1,20 @@
 """
 Document Parser - HTML -> Structured JSON (Portfolio Example)
 =============================================================
-Bu script bir web sayfasini CSS selector'lar kullanarak okur ve temiz,
-yapilandirilmis JSON'a cevirir. Mantik su:
+This script reads a web page using CSS selectors and turns it into clean,
+structured JSON. The idea:
 
-    "Sayfadaki basliklara ve govdeye CSS selector'larla isaret et,
-     belge derli toplu JSON (baslik + bolumler) olarak ciksin."
+    "Point CSS selectors at the page's headings and body, and the document
+     comes out as tidy JSON (title + sections)."
 
-Bu, 'HTML parser' tarzi islerin cekirdek desenidir: her kaynak (site) icin
-TEK bir parser yazarsin -- cogunlukla sadece asagidaki selector'lari
-degistirerek. Isin %90'i bu dosyanin en ustundeki SELECTORS sozlugudur.
+This is the core pattern behind 'HTML parser' style work: you write ONE parser
+per source (site), mostly by changing the selectors below. ~90% of the work is
+the SELECTORS dict at the top of this file.
 
-Calistirma:
+Usage:
     pip install requests beautifulsoup4
-    python document_parser.py                 # ornek URL'i parse eder (online)
-    python document_parser.py page.html       # kaydedilmis yerel HTML'i parse eder (offline)
+    python document_parser.py                 # parses the example URL (online)
+    python document_parser.py page.html       # parses a saved local HTML file (offline)
 """
 
 import sys
@@ -25,45 +25,45 @@ from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
-# 1) SELECTOR YAPILANDIRMASI
-#    Isin kalbi burasi: her parcanin "adresini" (CSS selector) tanimliyoruz.
-#    Yeni bir kaynak icin genelde SADECE bu uc satiri degistirirsin.
+# 1) SELECTOR CONFIGURATION
+#    This is the heart of the work: we define the "address" (CSS selector) of
+#    each part. For a new source you usually change ONLY these three lines.
 # ---------------------------------------------------------------------------
 SELECTORS = {
-    "title":       "div.product_main h1",        # belge basligi (tek eleman)
-    "description": "#product_description + p",    # aciklama: #product_description'dan HEMEN sonraki <p>
-    "info_rows":   "table.table-striped tr",      # "Product Information" tablosunun satirlari (th + td)
+    "title":       "div.product_main h1",        # document title (single element)
+    "description": "#product_description + p",    # description: the <p> right after #product_description
+    "info_rows":   "table.table-striped tr",      # rows of the "Product Information" table (th + td)
 }
 
-# Komut satirindan kaynak verilmezse kullanilacak varsayilan ornek sayfa:
+# Default example page used when no source is passed on the command line:
 DEFAULT_URL = "https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html"
 
 
 def load_soup(source: str) -> BeautifulSoup:
-    """Kaynak URL ise indir, yerel dosya ise diskten oku; BeautifulSoup dondur."""
+    """Fetch the source if it's a URL, otherwise read it from disk; return BeautifulSoup."""
     if source.startswith("http"):
-        # --- Online: sayfayi indir ---
+        # --- Online: download the page ---
         resp = requests.get(source, timeout=15)
         resp.raise_for_status()
-        resp.encoding = "utf-8"   # encoding'i acikca UTF-8'e sabitle -> "Â£" gibi bozulmalari onler
+        resp.encoding = "utf-8"   # pin encoding to UTF-8 to avoid mojibake like "Â£"
         html = resp.text
     else:
-        # --- Offline: kaydedilmis HTML dosyasini oku (gercek isin akisi boyle) ---
+        # --- Offline: read a saved HTML file (this mirrors the real workflow) ---
         with open(source, encoding="utf-8") as f:
             html = f.read()
     return BeautifulSoup(html, "html.parser")
 
 
 def parse_document(soup: BeautifulSoup) -> dict:
-    """Sayfayi SELECTORS'a gore yapilandirilmis bir sozluge (JSON'a) cevir."""
+    """Convert the page into a structured dict (JSON) based on SELECTORS."""
 
-    # --- Baslik: tek bir eleman -> .select_one ---
+    # --- Title: a single element -> .select_one ---
     title_el = soup.select_one(SELECTORS["title"])
     title = title_el.get_text(strip=True) if title_el else None
 
     sections = []
 
-    # --- Bolum 1: Aciklama ---
+    # --- Section 1: Description ---
     desc_el = soup.select_one(SELECTORS["description"])
     if desc_el:
         sections.append({
@@ -71,9 +71,9 @@ def parse_document(soup: BeautifulSoup) -> dict:
             "content": [desc_el.get_text(strip=True)],
         })
 
-    # --- Bolum 2: Urun Bilgisi tablosu (her satir: etiket -> deger) ---
+    # --- Section 2: Product Information table (each row: label -> value) ---
     info_lines = []
-    for row in soup.select(SELECTORS["info_rows"]):     # .select -> birden cok eleman dondurur
+    for row in soup.select(SELECTORS["info_rows"]):     # .select -> returns multiple elements
         label_el = row.select_one("th")
         value_el = row.select_one("td")
         if label_el and value_el:
@@ -86,7 +86,7 @@ def parse_document(soup: BeautifulSoup) -> dict:
             "content": info_lines,
         })
 
-    # --- Her seyi temiz, yapilandirilmis JSON yapisina koy ---
+    # --- Assemble everything into a clean, structured JSON shape ---
     return {
         "title": title,
         "section_count": len(sections),
@@ -95,21 +95,21 @@ def parse_document(soup: BeautifulSoup) -> dict:
 
 
 def main():
-    # Komut satirindan kaynak verilmezse varsayilan URL kullanilir
+    # Use the default URL when no source is given on the command line
     source = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_URL
-    print(f"[*] Parse ediliyor: {source}")
+    print(f"[*] Parsing: {source}")
 
     soup = load_soup(source)
     document = parse_document(soup)
 
-    # JSON'a cevir. ensure_ascii=False -> Turkce/aksanli karakterler bozulmaz
+    # Convert to JSON. ensure_ascii=False keeps non-ASCII characters intact
     output = json.dumps(document, indent=2, ensure_ascii=False)
 
-    # Hem ekrana yaz hem dosyaya kaydet
+    # Print to screen and save to a file
     print(output)
     with open("document.json", "w", encoding="utf-8") as f:
         f.write(output)
-    print("\n[+] document.json yazildi.")
+    print("\n[+] Wrote document.json.")
 
 
 if __name__ == "__main__":

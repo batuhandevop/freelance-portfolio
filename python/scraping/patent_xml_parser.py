@@ -1,23 +1,23 @@
 """
 Patent XML Parser - IPPH/WIPO-style XML -> Structured JSON (Prototype)
 ======================================================================
-Cin patent verisi (IPPH formati, schemaVersion V2.1.0) XML'lerini temiz,
-yapilandirilmis cikti'ya cevirir. Veri paketi yapisi:
+Parses Chinese patent data (IPPH format, schemaVersion V2.1.0) XML files into
+clean, structured output. Package layout:
 
-    <gun-klasoru>/CREATE_xxx.ZIP  ->  zip icinde  ->  CN<...>A.XML
+    <date-folder>/CREATE_xxx.ZIP  ->  inside the zip  ->  CN<...>A.XML
 
-Bu prototip TEK bir patent XML'ini parse eder (dogrudan dosyadan ya da bir
-zip girisinden). Cikan alanlar musterinin istedikleridir:
+This prototype parses a single patent XML (either a file path directly, or the
+first XML inside a zip). Extracted fields match the requested scope:
   - publication / application identifiers
-  - claims + claim numbers + independent/dependent gostergesi
-  - description bolumleri
-  - bibliographic metadata (IPC siniflandirma, tarihler)
+  - claims + claim numbers + independent/dependent indicator
+  - description sections
+  - bibliographic metadata (IPC classifications, dates)
   - legal/owner metadata (applicant / inventor)
 
-Calistirma:
+Usage:
     pip install lxml
-    python patent_xml_parser.py <patent.xml>      # tek XML dosyasi
-    python patent_xml_parser.py <paket.zip>        # zip icindeki ilk XML
+    python patent_xml_parser.py <patent.xml>      # a single XML file
+    python patent_xml_parser.py <package.zip>      # the first XML inside a zip
 """
 
 import sys
@@ -28,11 +28,11 @@ from lxml import etree
 
 
 # ---------------------------------------------------------------------------
-# Yardimcilar
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _text(el):
-    """Bir elemanin metnini bosluklar temizlenmis dondur (None-guvenli)."""
+    """Return an element's whitespace-normalized text (None-safe)."""
     if el is None:
         return None
     txt = "".join(el.itertext())
@@ -40,8 +40,8 @@ def _text(el):
 
 
 def load_root(source: str):
-    """Kaynak .zip ise icindeki ilk XML'i, degilse dosyayi parse eder.
-    recover=True -> harici DTD/entity referanslarina takilmadan parse eder."""
+    """Parse the first XML inside a .zip, or the file itself otherwise.
+    recover=True lets us parse despite the external DTD/entity reference."""
     parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
     if source.lower().endswith(".zip"):
         with zipfile.ZipFile(source) as zf:
@@ -53,11 +53,11 @@ def load_root(source: str):
 
 
 # ---------------------------------------------------------------------------
-# Alan cikariciler  (her biri kaynak XML'deki acik tag/attribute'lara isaret eder)
+# Field extractors  (each maps to explicit tags/attributes in the source XML)
 # ---------------------------------------------------------------------------
 
 def extract_identifiers(doc):
-    """publication ve application ID'leri (birden cok dataFormat var: original/ipph/docdb/epodoc)."""
+    """Publication and application IDs (multiple dataFormats: original/ipph/docdb/epodoc)."""
     def collect(tag):
         out = []
         for info in doc.findall(f".//BibliographicData/{tag}"):
@@ -80,7 +80,7 @@ def extract_identifiers(doc):
 
 
 def extract_claims(doc):
-    """Claims bloklari: ozet sayilar + her claim (number, independent/dependent, parent ref, metin)."""
+    """Claim blocks: summary counts + each claim (number, independent/dependent, parent ref, text)."""
     blocks = []
     for claims in doc.findall(".//Claims"):
         items = []
@@ -90,7 +90,7 @@ def extract_claims(doc):
                 "number": cl.get("number"),
                 "subordination": cl.get("subordination"),   # independent | sub
                 "is_independent": cl.get("subordination") == "independent",
-                "parent_ref": cl.get("idRef"),               # bagimli claim'in baglandigi claim
+                "parent_ref": cl.get("idRef"),               # parent claim a dependent claim refers to
                 "text": " ".join(_text(t) or "" for t in cl.findall("ClaimText")).strip(),
             })
         blocks.append({
@@ -104,7 +104,7 @@ def extract_claims(doc):
 
 
 def extract_description(doc):
-    """Bulus basligi + aciklama paragraflari + cizim aciklamasi."""
+    """Invention title + description paragraphs + drawings description."""
     desc = doc.find(".//Description")
     paragraphs = [_text(p) for p in desc.findall(".//Paragraph")] if desc is not None else []
     return {
@@ -117,13 +117,13 @@ def extract_description(doc):
 
 
 def extract_classifications(doc):
-    """IPC siniflandirma kodlari (bibliographic metadata)."""
+    """IPC classification codes (bibliographic metadata)."""
     return [_text(c.find("Text")) for c in doc.findall(".//ClassificationIPCR")
             if _text(c.find("Text"))]
 
 
 def extract_parties(doc):
-    """Legal/owner metadata: applicant'lar ve inventor'lar (tekrarli isimler tekillestirilir)."""
+    """Legal/owner metadata: applicants and inventors (duplicate names deduplicated)."""
     def names(path):
         seen, out = set(), []
         for n in doc.findall(path):
@@ -139,12 +139,12 @@ def extract_parties(doc):
 
 
 def parse_patent(root) -> dict:
-    """Bir patent XML kokunu tam yapilandirilmis sozluge cevir."""
+    """Convert one patent XML root into a fully structured dict."""
     doc = root.find(".//PatentDocument")
     if doc is None:
         doc = root
     ids = extract_identifiers(doc)
-    # Birincil yayin numarasini (ipph format) kolay erisim icin yukari tasi
+    # Surface the primary publication number (ipph format) for easy access
     pub_ipph = next((p["dnum"] for p in ids["publication"] if p["data_format"] == "ipph"), None)
     return {
         "primary_publication_id": pub_ipph,
@@ -158,10 +158,10 @@ def parse_patent(root) -> dict:
 
 def main():
     if len(sys.argv) < 2:
-        print("Kullanim: python patent_xml_parser.py <patent.xml | paket.zip>")
+        print("Usage: python patent_xml_parser.py <patent.xml | package.zip>")
         sys.exit(1)
     source = sys.argv[1]
-    print(f"[*] Parse ediliyor: {source}")
+    print(f"[*] Parsing: {source}")
 
     root = load_root(source)
     record = parse_patent(root)
@@ -170,7 +170,7 @@ def main():
     with open("patent.json", "w", encoding="utf-8") as f:
         f.write(output)
 
-    # Ozet (validator/manuel kontrol icin hizli gosterge)
+    # Summary (quick indicator for validator / manual review)
     c = record["claims"][0] if record["claims"] else {}
     print(f"[+] Publication: {record['primary_publication_id']}")
     print(f"[+] Title: {record['description']['invention_title']}")
@@ -178,7 +178,7 @@ def main():
     print(f"[+] IPC: {', '.join(record['ipc_classifications'][:5])}")
     print(f"[+] Applicants: {record['parties']['applicants']}")
     print(f"[+] Description paragraphs: {record['description']['paragraph_count']}")
-    print("[+] patent.json yazildi (tam yapilandirilmis cikti).")
+    print("[+] Wrote patent.json (full structured output).")
 
 
 if __name__ == "__main__":
